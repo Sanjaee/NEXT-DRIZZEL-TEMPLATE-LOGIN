@@ -20,22 +20,12 @@ export default async function handler(
 
     const result = await verifyOTP(email, otp_code, "email_verification");
 
+    // Return user data for auto-login (similar to zacode pattern)
     return res.status(200).json({
-      data: {
-        user: {
-          id: result.user.id,
-          email: result.user.email,
-          full_name: result.user.fullName,
-          user_type: result.user.userType,
-          profile_photo: result.user.profilePhoto,
-          is_verified: result.user.isVerified,
-          login_type: result.user.loginType,
-          created_at: result.user.createdAt,
-        },
-        access_token: result.access_token,
-        refresh_token: result.refresh_token,
-        expires_in: result.expires_in,
-      },
+      success: result.success,
+      user: result.user,
+      // Include OTP code for AUTO_LOGIN_ pattern
+      otpCode: otp_code,
     });
   } catch (error) {
     console.error("Verify OTP error:", error);

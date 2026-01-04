@@ -233,14 +233,12 @@ export default function VerifyOtp() {
           otp_code: otpString,
         });
 
-        // Auto-login using the JWT tokens from verification
-        const accessToken = data.access_token;
-        const refreshToken = data.refresh_token;
-        
-        if (accessToken && refreshToken) {
+        // Auto-login using AUTO_LOGIN_ pattern (like zacode)
+        if (data.success && data.user) {
+          // Use AUTO_LOGIN_ pattern with OTP code as token
           const loginResult = await signIn("credentials", {
-            accessToken: accessToken,
-            refreshToken: refreshToken,
+            email: userEmail,
+            password: `AUTO_LOGIN_${otpString}`,
             redirect: false,
           });
 
@@ -248,7 +246,7 @@ export default function VerifyOtp() {
             toast({
               title: "🎉 Berhasil!",
               description:
-                "Email berhasil diverifikasi! Selamat datang di template zacode. Mengalihkan...",
+                "Email berhasil diverifikasi! Selamat datang. Mengalihkan...",
             });
             // Clear session storage
             sessionStorage.removeItem("registration_email");

@@ -229,22 +229,18 @@ export const verifyOTP = async (email: string, otpCode: string, type: string = "
       .where(eq(users.id, user.id));
   }
 
-  // Generate tokens
-  const accessToken = generateAccessToken(user.id, user.email, user.userType);
-  const refreshToken = generateRefreshToken(user.id);
-
-  // Save refresh token to sessions
-  await db.insert(sessions).values({
-    userId: user.id,
-    refreshToken,
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-  });
-
+  // Return user data for auto-login (using AUTO_LOGIN_ pattern)
+  // No JWT tokens needed - NextAuth will handle authentication
   return {
-    user: { ...user, isVerified: true },
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    expires_in: 15 * 60,
+    success: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.fullName,
+      role: user.userType,
+      loginMethod: user.loginType ?? "credential",
+      image: user.profilePhoto ?? undefined,
+    },
   };
 };
 

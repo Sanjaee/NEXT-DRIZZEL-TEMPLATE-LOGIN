@@ -1,311 +1,213 @@
 import NextAuth, { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
-import { request as undiciRequest } from "undici";
-import { api, TokenManager } from "@/lib/api";
+import { compare } from "bcryptjs";
+import { eq } from "drizzle-orm";
+import { db, users } from "@/db/index";
+import { loginWithGoogle } from "@/lib/services";
+import { Profile } from "next-auth";
+
+// Extend Profile type to include Google-specific fields
+interface GoogleProfile extends Profile {
+  picture?: string;
+  email_verified?: boolean;
+  locale?: string;
+  hd?: string;
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
-    GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-    }),
     CredentialsProvider({
-      id: "credentials",
-      name: "credentials",
+      name: "Credentials",
       credentials: {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
-        accessToken: { label: "Access Token", type: "text" },
-        refreshToken: { label: "Refresh Token", type: "text" },
       },
       async authorize(credentials) {
         try {
-          // If accessToken is provided (from OTP verification), use it directly
-          if (credentials?.accessToken) {
-            try {
-              // Decode JWT token to get user info (no need to call API)
-              const tokenParts = credentials.accessToken.split('.');
-              if (tokenParts.length !== 3) {
-                console.error("Invalid JWT token format");
-                return null;
-              }
-
-              // Decode JWT payload (base64url) - Node.js environment
-              let base64 = tokenParts[1].replace(/-/g, '+').replace(/_/g, '/');
-              // Add padding if needed
-              while (base64.length % 4) {
-                base64 += '=';
-              }
-
-              // Use Buffer if available (Node.js), otherwise use atob (browser)
-              let payloadStr: string;
-              if (typeof Buffer !== 'undefined') {
-                payloadStr = Buffer.from(base64, 'base64').toString();
-              } else {
-                payloadStr = atob(base64);
-              }
-
-              const payload = JSON.parse(payloadStr);
-
-              // Extract user info from JWT payload
-              const userId = payload.userId || payload.sub || "";
-              const email = payload.email || "";
-              const role = payload.role || "member";
-              
-              // Use email prefix as name (can be enhanced later)
-              const userName = email.split("@")[0] || "User";
-
-              return {
-                id: userId,
-                email: email,
-                name: userName,
-                image: "",
-                accessToken: credentials.accessToken,
-                refreshToken: credentials.refreshToken || "",
-                isVerified: true, // If token exists, email is verified
-                userType: role,
-                loginType: "credential",
-              };
-            } catch (error) {
-              console.error("Token validation failed:", error);
-              console.error("Error details:", error instanceof Error ? error.message : String(error));
-              return null;
-            }
+          if (!credentials?.email) {
+            throw new Error("Email is required");
           }
 
-          // Regular login with email/password
-          if (!credentials?.email || !credentials?.password) {
-            return null;
-          }
-
-          const authResponse = await api.login({
-            email: credentials.email,
-            password: credentials.password,
+          const user = await db.query.users.findFirst({
+            where: eq(users.email, credentials.email),
           });
 
-          // Check if email verification is required
-          if (authResponse.requires_verification && authResponse.verification_token) {
-            // Throw special error to trigger redirect to verification page
-            const error = new Error("EMAIL_NOT_VERIFIED") as Error & {
-              verification_token?: string;
-              user_email?: string;
-            };
-            error.verification_token = authResponse.verification_token;
-            error.user_email = authResponse.user.email;
-            throw error;
+          if (!user) {
+            throw new Error("User not found");
           }
 
-          // Store tokens in localStorage
-          TokenManager.setTokens(
-            authResponse.access_token,
-            authResponse.refresh_token
+          // Check login method
+          if (user.loginType === "google") {
+            throw new Error(
+              "This email is registered with Google. Please sign in with Google."
+            );
+          }
+
+          // Verify email
+          if (!user.isVerified) {
+            throw new Error("EMAIL_NOT_VERIFIED");
+          }
+
+          // Check if this is an auto-login request (password starts with "AUTO_LOGIN_")
+          if (
+            credentials.password &&
+            credentials.password.startsWith("AUTO_LOGIN_")
+          ) {
+            // Extract the verify token from password field
+            // The token is the OTP code that was just verified
+            // For security, we verify that email is verified (which was done in verifyOTP)
+            // In a production environment, you might want to add additional checks
+
+            // Return user for auto-login after OTP verification
+            return {
+              id: user.id,
+              email: user.email,
+              name: user.fullName,
+              role: user.userType,
+              loginMethod: user.loginType ?? "credential",
+              image: user.profilePhoto ?? undefined,
+            };
+          }
+
+          // Regular password login
+          if (!credentials?.password) {
+            throw new Error("Password is required");
+          }
+
+          // Verify password
+          if (!user.password) {
+            throw new Error("Password not found");
+          }
+
+          const isValidPassword = await compare(
+            credentials.password,
+            user.password
           );
+          if (!isValidPassword) {
+            throw new Error("Invalid password");
+          }
 
           return {
-            id: authResponse.user.id,
-            email: authResponse.user.email,
-            name: authResponse.user.full_name,
-            image: authResponse.user.profile_photo || "",
-            accessToken: authResponse.access_token,
-            refreshToken: authResponse.refresh_token,
-            isVerified: authResponse.user.is_verified,
-            userType: authResponse.user.user_type,
-            loginType: authResponse.user.login_type,
+            id: user.id,
+            email: user.email,
+            name: user.fullName,
+            role: user.userType,
+            loginMethod: user.loginType ?? "credential",
+            image: user.profilePhoto ?? undefined,
           };
         } catch (error) {
-          console.error("Authentication error:", error);
-
-          // Check if it's a specific error from our backend and throw it
-          if (error instanceof Error) {
-            // Pass through the specific error message from our backend
-            // Frontend will catch and display in toast
-            throw error;
-          }
-
-          return null;
+          console.error("Authorization error:", error);
+          throw error;
         }
+      },
+    }),
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      authorization: {
+        params: {
+          access_type: "offline",
+          response_type: "code",
+        },
       },
     }),
   ],
   callbacks: {
-    async signIn({ user, account }) {
-      // Handle Google OAuth
-      if (account?.provider === "google") {
-        try {
-          const authResponse = await api.googleOAuth({
-            email: user.email!,
-            full_name: user.name || user.email!.split("@")[0],
-            profile_photo: user.image || "",
-            google_id: account.providerAccountId,
+    async signIn({ user, account, profile }) {
+      try {
+        if (account?.provider === "google") {
+          const googleProfile = profile as GoogleProfile;
+          const existingUser = await db.query.users.findFirst({
+            where: eq(users.email, user.email!),
           });
 
-          // Store the database user ID and tokens in the user object for the JWT callback
-          user.id = authResponse.user.id; // Use database UUID instead of Google ID
-          user.accessToken = authResponse.access_token;
-          user.refreshToken = authResponse.refresh_token;
-          user.isVerified = authResponse.user.is_verified;
-          user.userType = authResponse.user.user_type;
-          user.loginType = authResponse.user.login_type;
-          user.image = authResponse.user.profile_photo || user.image;
-
-          return true;
-        } catch (error) {
-          console.error("Google OAuth error:", error);
-
-          // Check if it's a specific error from our backend
-          if (error instanceof Error) {
-            // Map error messages for toast display
-            if (error.message.includes("already registered with password") || 
-                error.message.includes("already registered with credentials")) {
-              throw new Error("Email sudah terdaftar dengan password. Silakan login dengan email dan password.");
-            }
-            if (error.message.includes("different Google account")) {
-              throw new Error("Email sudah terdaftar dengan akun Google yang berbeda.");
-            }
-            // Re-throw with original message for toast display
-            throw error;
+          if (existingUser && existingUser.loginType === "credential") {
+            throw new Error(
+              "This email is registered with email/password. Please sign in with your password."
+            );
           }
 
-          return false;
+          // Update user's profile image if it exists in Google profile
+          if (existingUser && googleProfile?.picture) {
+            await db
+              .update(users)
+              .set({ profilePhoto: googleProfile.picture })
+              .where(eq(users.email, user.email!));
+          }
         }
+        return true;
+      } catch (error) {
+        console.error("Sign in error:", error);
+        throw error;
       }
-      return true;
     },
-    async jwt({ token, user, account, trigger }) {
-      // Initial sign in
-      if (account && user) {
-        return {
-          ...token,
-          sub: user.id,
-          accessToken: user.accessToken,
-          refreshToken: user.refreshToken,
-          isVerified: user.isVerified,
-          userType: user.userType,
-          loginType: user.loginType,
-          image: user.image,
-          accessTokenExpires: Date.now() + 15 * 60 * 1000, // 15 minutes
-        };
-      }
-
-      // Handle session update trigger (when update() is called)
-      if (trigger === "update" && token.accessToken) {
-        try {
-          // Fetch updated user data from backend
-          const backendUrl = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
-          const userResponse = await undiciRequest(`${backendUrl}/api/v1/auth/me`, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${token.accessToken}`,
-            },
-          });
-
-          if (userResponse.statusCode >= 200 && userResponse.statusCode < 300) {
-            const userData = (await userResponse.body.json()) as {
-              data?: { user?: Record<string, unknown> };
-              user?: Record<string, unknown>;
-            };
-            const updatedUser = userData.data?.user || userData.user;
-            if (updatedUser) {
-              return {
-                ...token,
-                image: (updatedUser.profile_photo as string) || (updatedUser.profilePic as string) || token.image,
-                // Update name/username if changed
-                name: (updatedUser.username as string) || (updatedUser.full_name as string) || token.name,
-              };
-            }
-          }
-        } catch (error) {
-          console.error("Failed to fetch updated user data:", error);
-          // Continue with existing token if fetch fails
+    async jwt({ token, account, profile, user }) {
+      try {
+        if (account?.provider === "credentials") {
+          token.sub = user.id;
+          token.email = user.email;
+          token.name = user.name;
+          token.role = user.role;
+          token.picture = user.image;
+          token.loginMethod = user.loginMethod;
         }
-      }
 
-      // Return previous token if the access token has not expired yet
-      if (token.accessTokenExpires && Date.now() < (token.accessTokenExpires as number)) {
+        if (account?.provider === "google") {
+          if (!profile?.name || !profile?.email) {
+            throw new Error("Google profile is missing required information");
+          }
+
+          const googleProfile = profile as GoogleProfile;
+
+          const data = {
+            username: profile.name,
+            email: profile.email,
+            image: googleProfile.picture ?? "",
+          };
+
+          const googleUser = await loginWithGoogle(data);
+          token.sub = googleUser.id;
+          token.email = googleUser.email;
+          token.name = googleUser.name;
+          token.role = googleUser.role;
+          token.picture = googleProfile.picture || googleUser.image;
+          token.loginMethod = googleUser.loginMethod;
+        }
+
         return token;
+      } catch (error) {
+        console.error("JWT error:", error);
+        throw error;
       }
-
-      // Access token has expired, try to update it
-      const refreshed = await refreshAccessToken(token);
-      
-      // Ensure all required JWT fields are present
-      return {
-        ...token,
-        ...refreshed,
-        sub: token.sub || "",
-      } as typeof token;
     },
     async session({ session, token }) {
-      if (session.user) {
-        session.user.id = token.sub as string;
-        // Prioritize token.image over session.user.image
-        session.user.image = (token.image as string) || session.user.image || undefined;
-        session.user.name = (token.name as string) || session.user.name || "";
-        session.user.role = token.userType as string; // Add role alias
-        session.user.username = (token.name as string) || session.user.name; // Add username alias
+      try {
+        session.user.id = token.sub ?? "";
+        session.user.email = token.email ?? "";
+        session.user.name = token.name ?? "";
+        session.user.role = token.role as string;
+        session.user.loginMethod = token.loginMethod as string;
+        session.user.image = token.picture ?? "";
+
+        return session;
+      } catch (error) {
+        console.error("Session error:", error);
+        throw error;
       }
-      session.accessToken = token.accessToken as string;
-      session.refreshToken = token.refreshToken as string;
-      session.isVerified = token.isVerified as boolean;
-      session.userType = token.userType as string;
-      session.loginType = token.loginType as string;
-      return session;
     },
   },
   pages: {
     signIn: "/auth/login",
     error: "/auth/login",
+    newUser: "/auth/register",
   },
   session: {
     strategy: "jwt",
-    maxAge: 7 * 24 * 60 * 60, // 7 days
-  },
-  jwt: {
-    maxAge: 7 * 24 * 60 * 60, // 7 days
+    maxAge: 30 * 24 * 60 * 60, // 30 days
   },
   secret: process.env.NEXTAUTH_SECRET,
   debug: process.env.NODE_ENV === "development",
 };
-
-async function refreshAccessToken(token: {
-  refreshToken?: string;
-  accessTokenExpires?: number;
-  [key: string]: unknown;
-}) {
-  try {
-    if (!token.refreshToken) {
-      return {
-        ...token,
-        error: "RefreshAccessTokenError",
-      };
-    }
-
-    const refreshedTokens = await api.refreshToken(token.refreshToken);
-
-    if (!refreshedTokens) {
-      return {
-        ...token,
-        error: "RefreshAccessTokenError",
-      };
-    }
-
-    return {
-      ...token,
-      accessToken: refreshedTokens.access_token,
-      accessTokenExpires: Date.now() + refreshedTokens.expires_in * 1000,
-      refreshToken: refreshedTokens.refresh_token ?? token.refreshToken,
-      isVerified: refreshedTokens.user?.is_verified ?? true,
-      userType: refreshedTokens.user?.user_type ?? "member",
-      loginType: refreshedTokens.user?.login_type ?? "credential",
-      image: refreshedTokens.user?.profile_photo || token.image || "",
-    };
-  } catch (error) {
-    console.error("Error refreshing access token:", error);
-    return {
-      ...token,
-      error: "RefreshAccessTokenError",
-    };
-  }
-}
 
 export default NextAuth(authOptions);

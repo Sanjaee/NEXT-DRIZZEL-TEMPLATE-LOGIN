@@ -14,7 +14,6 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
 import { Eye, EyeOff } from "lucide-react";
-import { useApi } from "@/components/contex/ApiProvider";
 
 interface LoginFormData {
   email: string;
@@ -23,7 +22,6 @@ interface LoginFormData {
 
 export const LoginForm = () => {
   const router = useRouter();
-  const { api } = useApi();
 
   // Get callback URL from query params or default to dashboard
   const callbackUrl = (router.query.callbackUrl as string) || "/";
@@ -79,161 +77,63 @@ export const LoginForm = () => {
     setLoading(true);
 
     try {
-      // Check if email needs verification by calling API directly first
-      try {
-        const authResponse = await api.login({
-          email: formData.email,
-          password: formData.password,
+      // Use NextAuth signIn directly (like zacode)
+      const result = await signIn("credentials", {
+        redirect: false,
+        email: formData.email,
+        password: formData.password,
+      });
+
+      if (result?.ok) {
+        toast({
+          title: "✅ Login Berhasil!",
+          description: "Selamat datang!",
         });
+        router.push(callbackUrl);
+      } else {
+        // Handle specific errors
+        let errorMessage = "Email atau password salah. Silakan coba lagi.";
+        let errorTitle = "❌ Login Gagal";
 
-        // Check if verification is required
-        if (authResponse.requires_verification) {
-          toast({
-            title: "📧 Email Belum Diverifikasi",
-            description: "OTP telah dikirim ke email Anda. Silakan verifikasi email untuk melanjutkan.",
-          });
+        if (result?.error) {
+          const errorStr = typeof result.error === 'string' ? result.error : JSON.stringify(result.error);
+          
+          // Check for EMAIL_NOT_VERIFIED error
+          if (errorStr === "EMAIL_NOT_VERIFIED" || errorStr.includes("EMAIL_NOT_VERIFIED")) {
+            toast({
+              title: "📧 Email Belum Diverifikasi",
+              description: "OTP telah dikirim ke email Anda. Silakan verifikasi email untuk melanjutkan.",
+            });
 
-          // Store email in session storage
-          sessionStorage.setItem("registration_email", formData.email);
+            // Store email in session storage
+            sessionStorage.setItem("registration_email", formData.email);
 
-          // Redirect to verify-otp page for OTP input
-          router.push(`/auth/verify-otp?email=${encodeURIComponent(formData.email)}`);
-          return;
-        }
-
-        // If verified, proceed with NextAuth login
-        const result = await signIn("credentials", {
-          redirect: false,
-          accessToken: authResponse.access_token,
-          refreshToken: authResponse.refresh_token,
-        });
-
-        if (result?.ok) {
-          toast({
-            title: "✅ Login Berhasil!",
-            description: "Selamat datang kembali di template zacode!",
-          });
-          router.push(callbackUrl);
-        } else {
-          toast({
-            title: "❌ Login Gagal",
-            description: "Terjadi kesalahan saat login. Silakan coba lagi.",
-            variant: "destructive",
-          });
-        }
-      } catch (apiError: unknown) {
-        // Handle API error response
-        const error = apiError as Error & {
-          message?: string;
-          user_email?: string;
-          response?: {
-            status: number;
-            data?: {
-              error?: {
-                email?: string;
-                requires_verification?: boolean;
-                message?: string;
-              };
-              message?: string;
-            };
-          };
-        };
-
-        // Check if it's email not verified error from backend (401 with requires_verification)
-        if (
-          error.response?.status === 401 &&
-          error.response?.data?.error?.requires_verification
-        ) {
-          const email = error.response.data.error.email || formData.email;
-          const errorMessage = error.response.data.error.message || 
-            error.response.data.message || 
-            "OTP telah dikirim ke email Anda. Silakan verifikasi email untuk melanjutkan.";
-
-          toast({
-            title: "📧 Email Belum Diverifikasi",
-            description: errorMessage,
-          });
-
-          sessionStorage.setItem("registration_email", email);
-          router.push(`/auth/verify-otp?email=${encodeURIComponent(email)}&callbackUrl=${encodeURIComponent(callbackUrl)}`);
-          return;
-        }
-
-        // If it's EMAIL_NOT_VERIFIED error from NextAuth handler
-        if (error.message === "EMAIL_NOT_VERIFIED") {
-          toast({
-            title: "📧 Email Belum Diverifikasi",
-            description: "OTP telah dikirim ke email Anda. Silakan verifikasi email untuk melanjutkan.",
-          });
-
-          sessionStorage.setItem("registration_email", error.user_email || formData.email);
-          router.push(`/auth/verify-otp?email=${encodeURIComponent(error.user_email || formData.email)}&callbackUrl=${encodeURIComponent(callbackUrl)}`);
-          return;
-        }
-
-        // Try NextAuth login for other cases
-        const result = await signIn("credentials", {
-          redirect: false,
-          email: formData.email,
-          password: formData.password,
-        });
-
-        if (result?.ok) {
-          toast({
-            title: "✅ Login Berhasil!",
-            description: "Selamat datang kembali di template zacode!",
-          });
-          router.push(callbackUrl);
-        } else {
-          let errorMessage = "Email atau password salah. Silakan coba lagi.";
-          let errorTitle = "❌ Login Gagal";
-
-          // Handle specific error messages
-          if (result?.error) {
-            const errorStr = typeof result.error === 'string' ? result.error : JSON.stringify(result.error);
-            
-            // Check for specific error messages from our backend
-            if (
-              errorStr.includes("registered with Google") ||
-              errorStr.includes("Please use Google sign in") ||
-              errorStr.includes("Account type mismatch")
-            ) {
-              errorMessage =
-                "Email ini sudah terdaftar dengan Google. Silakan gunakan tombol 'Masuk dengan Google' untuk login.";
-              errorTitle = "⚠️ Tipe Akun Tidak Cocok";
-            } else if (
-              errorStr.includes("Password yang Anda masukkan salah") ||
-              errorStr.includes("Invalid password") ||
-              errorStr.includes("invalid email or password")
-            ) {
-              errorMessage =
-                "Email atau password salah. Silakan coba lagi.";
-              errorTitle = "🔒 Login Gagal";
-            } else if (errorStr.includes("Email tidak terdaftar") ||
-                       errorStr.includes("User not found") ||
-                       errorStr.includes("user not found")) {
-              errorMessage =
-                "Email tidak terdaftar. Silakan periksa kembali email Anda atau daftar akun baru.";
-              errorTitle = "👤 Email Tidak Ditemukan";
-            } else if (errorStr.includes("Invalid credentials") ||
-                       errorStr === "CredentialsSignin") {
-              errorMessage = "Email atau password salah. Silakan coba lagi.";
-              errorTitle = "❌ Login Gagal";
-            } else if (errorStr.includes("account is banned")) {
-              errorMessage = "Akun Anda telah dinonaktifkan. Silakan hubungi admin.";
-              errorTitle = "🚫 Akun Dinonaktifkan";
-            } else if (typeof result.error === 'string' && result.error.trim() !== '') {
-              // Use the error message directly if it's a valid string
-              errorMessage = result.error;
-            }
+            // Redirect to verify-otp page for OTP input
+            router.push(`/auth/verify-otp?email=${encodeURIComponent(formData.email)}&callbackUrl=${encodeURIComponent(callbackUrl)}`);
+            return;
           }
 
-          toast({
-            title: errorTitle,
-            description: errorMessage,
-            variant: "destructive",
-          });
+          // Check for other specific error messages
+          if (errorStr.includes("registered with Google") || 
+              errorStr.includes("Please sign in with Google")) {
+            errorMessage = "Email ini sudah terdaftar dengan Google. Silakan gunakan tombol 'Masuk dengan Google' untuk login.";
+            errorTitle = "⚠️ Tipe Akun Tidak Cocok";
+          } else if (errorStr.includes("User not found")) {
+            errorMessage = "Email tidak terdaftar. Silakan periksa kembali email Anda atau daftar akun baru.";
+            errorTitle = "👤 Email Tidak Ditemukan";
+          } else if (errorStr.includes("Invalid password")) {
+            errorMessage = "Email atau password salah. Silakan coba lagi.";
+            errorTitle = "🔒 Login Gagal";
+          } else if (typeof result.error === 'string' && result.error.trim() !== '') {
+            errorMessage = result.error;
+          }
         }
+
+        toast({
+          title: errorTitle,
+          description: errorMessage,
+          variant: "destructive",
+        });
       }
     } catch (error) {
       console.error("Login error:", error);
