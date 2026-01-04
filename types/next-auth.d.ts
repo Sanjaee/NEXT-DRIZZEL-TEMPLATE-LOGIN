@@ -20,6 +20,8 @@ declare module "next-auth" {
       loginMethod: string;
       image?: string;
     };
+    accessToken?: string;
+    refreshToken?: string;
   }
 }
 

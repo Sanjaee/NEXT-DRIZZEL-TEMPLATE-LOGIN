@@ -25,7 +25,8 @@ interface ApiProviderProps {
 export const ApiProvider: React.FC<ApiProviderProps> = ({ children }) => {
   const { data: session, status } = useSession();
   const isAuthenticated = status === 'authenticated' && !!session;
-  const accessToken = session?.accessToken || null;
+  // AccessToken is optional since we're using NextAuth directly (like zacode)
+  const accessToken = (session as { accessToken?: string })?.accessToken || null;
 
   // Update API client with current access token
   useEffect(() => {

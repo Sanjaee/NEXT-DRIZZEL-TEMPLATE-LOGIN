@@ -189,6 +189,10 @@ export const authOptions: NextAuthOptions = {
         session.user.role = token.role as string;
         session.user.loginMethod = token.loginMethod as string;
         session.user.image = token.picture ?? "";
+        // Note: accessToken and refreshToken are not needed when using NextAuth directly
+        // But kept for backward compatibility with ApiProvider
+        session.accessToken = undefined;
+        session.refreshToken = undefined;
 
         return session;
       } catch (error) {
