@@ -57,10 +57,16 @@ export interface RegisterResponse {
 }
 
 export interface OTPVerifyResponse {
-  user: User;
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
+  success: boolean;
+  user: {
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+    loginMethod: string;
+    image?: string;
+  };
+  otpCode?: string;
 }
 
 export interface ResendOTPResponse {
